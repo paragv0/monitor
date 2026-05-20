@@ -192,7 +192,7 @@ def has_no_results(driver: webdriver.Chrome) -> bool:
 
 def monitor():
     log.info("Starting CloudResearch monitor...")
-    send_telegram("CloudResearch monitor started! I'll ping you when projects appear.")
+    send_telegram("Hi! I'll ping you when the secret that we discussed happens ;)")
 
     driver = None
     logged_in = False
