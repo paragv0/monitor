@@ -64,17 +64,17 @@ def login(driver: webdriver.Chrome) -> bool:
         wait = WebDriverWait(driver, 20)
 
         # Fill email
-        email_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email'], input[name='email']")))
+        email_field = wait.until(EC.presence_of_element_located((By.ID, "Email")))
         email_field.clear()
         email_field.send_keys(EMAIL)
 
         # Fill password
-        password_field = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+        password_field = driver.find_element(By.ID, "Password")
         password_field.clear()
         password_field.send_keys(PASSWORD)
 
         # Submit
-        submit = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        submit = driver.find_element(By.ID, "log-in-btn")
         submit.click()
 
         # Wait for dashboard to load
