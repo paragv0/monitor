@@ -3,6 +3,7 @@ import time
 import random
 import logging
 import requests
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -10,22 +11,34 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
+# ─────────────────────────────────────────────
 # CONFIGURATION
-EMAIL          = os.environ.get("CR_EMAIL", "your_email@example.com")
-PASSWORD       = os.environ.get("CR_PASSWORD", "your_password")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "your_bot_token")
+# ─────────────────────────────────────────────
+EMAIL            = os.environ.get("CR_EMAIL", "your_email@example.com")
+PASSWORD         = os.environ.get("CR_PASSWORD", "your_password")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "your_bot_token")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "8552808380")
 
-DASHBOARD_URL  = "https://connect.cloudresearch.com/participant/dashboard"
-LOGIN_URL      = "https://account.cloudresearch.com/Account/Login?AppDestination=Connect"
+DASHBOARD_URL = "https://connect.cloudresearch.com/participant/dashboard"
+LOGIN_URL     = "https://account.cloudresearch.com/Account/Login?AppDestination=Connect"
 
 # Check every 90–150 seconds (randomised)
-CHECK_INTERVAL_MIN = 90
-CHECK_INTERVAL_MAX = 150
+CHECK_INTERVAL_MIN = 20
+CHECK_INTERVAL_MAX = 60
 
-# Re-login every 2–4 hours (randomised), in number of checks
+# Re-login every 2–4 hours (randomised), expressed in number of checks
 RELOGIN_AFTER_MIN = int((2 * 3600) / CHECK_INTERVAL_MAX)
 RELOGIN_AFTER_MAX = int((4 * 3600) / CHECK_INTERVAL_MIN)
+
+# ── QUIET HOURS (Ireland time, 24h) ──────────────────────────────────────────
+# Every night: off from 00:00 to 07:00
+QUIET_NIGHT_START = 0    # midnight
+QUIET_NIGHT_END   = 7    # 7am
+
+# Tuesdays: off from 05:00 to 15:00
+QUIET_TUESDAY_START = 5   # 5am
+QUIET_TUESDAY_END   = 15  # 3pm
+# ─────────────────────────────────────────────────────────────────────────────
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -42,6 +55,34 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+def is_quiet_time() -> tuple[bool, str]:
+    """
+    Returns (True, reason) if monitoring should be paused right now.
+    Uses Ireland local time (set TZ=Europe/Dublin on your server).
+    """
+    now = datetime.now()
+    hour = now.hour
+    weekday = now.weekday()  # Monday=0, Tuesday=1, ..., Sunday=6
+
+    # Every night: 00:00–07:00
+    if QUIET_NIGHT_START <= hour < QUIET_NIGHT_END:
+        return True, f"quiet night hours ({QUIET_NIGHT_START}:00–{QUIET_NIGHT_END}:00)"
+
+    # Tuesdays: 05:00–15:00
+    if weekday == 1 and QUIET_TUESDAY_START <= hour < QUIET_TUESDAY_END:
+        return True, f"Tuesday quiet hours ({QUIET_TUESDAY_START}:00–{QUIET_TUESDAY_END}:00)"
+
+    return False, ""
+
+
+def seconds_until_active() -> int:
+    """
+    How many seconds until the next active window starts.
+    Checks every minute — just sleeps 60s at a time in the quiet loop.
+    """
+    return 60
+
+
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -53,7 +94,6 @@ def send_telegram(message: str):
 
 
 def human_delay(min_s=0.5, max_s=1.5):
-    """Random short delay to mimic human interaction."""
     time.sleep(random.uniform(min_s, max_s))
 
 
@@ -65,12 +105,10 @@ def make_driver() -> webdriver.Chrome:
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
-    # Stealth flags to hide headless detection
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     driver = webdriver.Chrome(options=opts)
-    # Patch navigator.webdriver to undefined
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     })
@@ -86,7 +124,7 @@ def login(driver: webdriver.Chrome) -> bool:
 
         log.info(f"URL: {driver.current_url} | Title: {driver.title}")
 
-        # Step 1: Dismiss cookie banner if present
+        # Dismiss cookie banner
         try:
             cookie_btn = wait.until(EC.element_to_be_clickable(
                 (By.XPATH, "//button[contains(text(), 'Accept')]")
@@ -97,7 +135,7 @@ def login(driver: webdriver.Chrome) -> bool:
         except Exception:
             log.info("No cookie banner, continuing.")
 
-        # Step 2: Click Connect for Participants card
+        # Click Connect for Participants card
         try:
             connect_card = wait.until(EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, "div[data-app-destination='Connect_Participant']")
@@ -110,7 +148,7 @@ def login(driver: webdriver.Chrome) -> bool:
             driver.save_screenshot("card_click_failed.png")
             return False
 
-        # Step 3: Fill email (type like a human)
+        # Type email
         email_field = wait.until(EC.element_to_be_clickable((By.ID, "Email")))
         driver.execute_script("arguments[0].scrollIntoView(true);", email_field)
         human_delay(0.3, 0.8)
@@ -121,7 +159,7 @@ def login(driver: webdriver.Chrome) -> bool:
         log.info("Email entered.")
         human_delay(0.3, 0.8)
 
-        # Step 4: Fill password
+        # Type password
         password_field = wait.until(EC.element_to_be_clickable((By.ID, "Password")))
         password_field.clear()
         for char in PASSWORD:
@@ -130,12 +168,11 @@ def login(driver: webdriver.Chrome) -> bool:
         log.info("Password entered.")
         human_delay(0.5, 1.2)
 
-        # Step 5: Submit
+        # Submit
         submit = wait.until(EC.element_to_be_clickable((By.ID, "log-in-btn")))
         driver.execute_script("arguments[0].click();", submit)
         log.info("Submit clicked, waiting for redirect...")
 
-        # Step 6: Wait for redirect
         for i in range(25):
             time.sleep(1)
             current = driver.current_url
@@ -159,48 +196,72 @@ def login(driver: webdriver.Chrome) -> bool:
 
 
 def has_no_results(driver: webdriver.Chrome) -> bool:
-    """
-    Returns True if the 'No results' message is visible on the dashboard.
-    Returns False if it's gone (meaning projects are available!).
-    """
+    """Returns True if 'No results' is visible (no projects). False = projects available!"""
     try:
         driver.get(DASHBOARD_URL)
         wait = WebDriverWait(driver, 20)
-        # Wait for page body to load
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        human_delay(3, 5)  # let JS render fully
+        human_delay(3, 5)
 
         log.info(f"Dashboard loaded: {driver.current_url}")
 
-        # Look for the "No results" paragraph
         no_results_elements = driver.find_elements(
             By.XPATH, "//*[normalize-space(text())='No results']"
         )
 
         if no_results_elements:
-            log.info("'No results' found — no new projects yet.")
+            log.info("'No results' found — no projects yet.")
             return True
         else:
-            log.info("'No results' NOT found — projects may be available!")
+            log.info("'No results' gone — projects available!")
             return False
 
     except Exception as e:
         log.error(f"Error checking dashboard: {e}")
         driver.save_screenshot("dashboard_error.png")
-        return True  # assume no results on error to avoid false alerts
+        return True
 
 
 def monitor():
     log.info("Starting CloudResearch monitor...")
-    send_telegram("Hi! I'll ping you when the secret that we discussed happens ;)")
+    send_telegram(
+        "🟢 CloudResearch monitor started!\n"
+        f"😴 Quiet hours: every night {QUIET_NIGHT_START}:00–{QUIET_NIGHT_END}:00, "
+        f"Tuesdays {QUIET_TUESDAY_START}:00–{QUIET_TUESDAY_END}:00"
+    )
 
     driver = None
     logged_in = False
     session_checks = 0
     relogin_after = random.randint(RELOGIN_AFTER_MIN, RELOGIN_AFTER_MAX)
-    projects_alerted = False  # avoid spamming if projects stay visible
+    projects_alerted = False
+    was_quiet = False  # track transitions to avoid re-login spam after waking
 
     while True:
+        # ── Quiet hours check ────────────────────────────────────────────────
+        quiet, reason = is_quiet_time()
+        if quiet:
+            if not was_quiet:
+                log.info(f"Entering quiet period: {reason}. Pausing monitoring.")
+                send_telegram(f"😴 Pausing monitoring ({reason}).")
+                # Close browser during quiet hours to save resources
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    driver = None
+                    logged_in = False
+                was_quiet = True
+            time.sleep(60)  # check every minute whether quiet hours are over
+            continue
+
+        if was_quiet:
+            log.info("Quiet period ended, resuming monitoring.")
+            send_telegram("⏰ Resuming monitoring.")
+            was_quiet = False
+        # ────────────────────────────────────────────────────────────────────
+
         try:
             # Login / re-login
             if driver is None or not logged_in or session_checks >= relogin_after:
@@ -216,7 +277,7 @@ def monitor():
                 log.info(f"Next re-login in ~{relogin_after} checks.")
 
                 if not logged_in:
-                    send_telegram("CloudResearch login failed. Retrying in 5 minutes.")
+                    send_telegram("⚠️ Login failed. Retrying in 5 minutes.")
                     try:
                         driver.quit()
                     except Exception:
@@ -232,16 +293,15 @@ def monitor():
             if not no_results:
                 if not projects_alerted:
                     send_telegram(
-                        f"Projects are available on CloudResearch!\n\n"
-                        f"{DASHBOARD_URL}"
+                        f"🚨 Projects are available on CloudResearch!\n\n"
+                        f"👉 {DASHBOARD_URL}"
                     )
                     projects_alerted = True
                 else:
                     log.info("Projects still available (alert already sent).")
             else:
-                # Reset alert flag once "No results" comes back
                 if projects_alerted:
-                    log.info("Projects gone again, resetting alert flag.")
+                    log.info("Back to no results, resetting alert flag.")
                     projects_alerted = False
 
         except WebDriverException as e:
@@ -251,7 +311,6 @@ def monitor():
         except Exception as e:
             log.error(f"Unexpected error: {e}")
 
-        # Random wait between checks
         wait_time = random.randint(CHECK_INTERVAL_MIN, CHECK_INTERVAL_MAX)
         log.info(f"Next check in {wait_time}s...")
         time.sleep(wait_time)
