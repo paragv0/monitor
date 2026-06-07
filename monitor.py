@@ -23,8 +23,8 @@ DASHBOARD_URL = "https://connect.cloudresearch.com/participant/dashboard"
 LOGIN_URL     = "https://account.cloudresearch.com/Account/Login?AppDestination=Connect"
 
 # Check every 90–150 seconds (randomised)
-CHECK_INTERVAL_MIN = 20
-CHECK_INTERVAL_MAX = 60
+CHECK_INTERVAL_MIN = 90
+CHECK_INTERVAL_MAX = 150
 
 # Re-login every 2–4 hours (randomised), expressed in number of checks
 RELOGIN_AFTER_MIN = int((2 * 3600) / CHECK_INTERVAL_MAX)
@@ -91,6 +91,23 @@ def send_telegram(message: str):
         log.info("Telegram notification sent.")
     except Exception as e:
         log.error(f"Failed to send Telegram message: {e}")
+
+
+def send_telegram_photo(image_path: str, caption: str = ""):
+    """Send a photo directly to Telegram."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    try:
+        with open(image_path, "rb") as photo:
+            resp = requests.post(
+                url,
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption},
+                files={"photo": photo},
+                timeout=20,
+            )
+        resp.raise_for_status()
+        log.info("Telegram photo sent.")
+    except Exception as e:
+        log.error(f"Failed to send Telegram photo: {e}")
 
 
 def human_delay(min_s=0.5, max_s=1.5):
@@ -292,10 +309,20 @@ def monitor():
 
             if not no_results:
                 if not projects_alerted:
-                    send_telegram(
-                        f"🚨 Projects are available on CloudResearch!\n\n"
-                        f"👉 {DASHBOARD_URL}"
-                    )
+                    screenshot_path = f"projects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    try:
+                        driver.save_screenshot(screenshot_path)
+                        log.info(f"Screenshot saved: {screenshot_path}")
+                        send_telegram_photo(
+                            screenshot_path,
+                            caption=f"🚨 Projects available on CloudResearch!\n👉 {DASHBOARD_URL}"
+                        )
+                    except Exception as e:
+                        log.error(f"Screenshot/photo failed: {e}")
+                        send_telegram(
+                            f"🚨 Projects are available on CloudResearch!\n\n"
+                            f"👉 {DASHBOARD_URL}"
+                        )
                     projects_alerted = True
                 else:
                     log.info("Projects still available (alert already sent).")
